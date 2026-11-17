@@ -1,0 +1,152 @@
+<!doctype html>
+<!--
+  ESCÁNER DE CÓDIGOS (EAN-13 / Code 128) -> Google Sheets
+  - Android (Chrome): usa BarcodeDetector nativo.
+  - iPhone/otros: usa la librería ZXing (se descarga de internet).
+  - La cámara exige HTTPS. Publicar este archivo en un enlace https (p. ej. GitHub Pages).
+  - Graba en la hoja "Escaneos" del mismo Google Sheet (ver Code.gs, parámetro hoja=Escaneos).
+-->
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Escáner de códigos</title>
+<style>
+  *{box-sizing:border-box}
+  body{font-family:system-ui,sans-serif;background:#f4f5f7;margin:0;padding:16px}
+  .card{max-width:460px;margin:auto;background:#fff;padding:18px;border-radius:12px;box-shadow:0 2px 10px #0001}
+  h1{font-size:1.2rem;margin:0 0 12px}
+  #cam{position:relative;background:#000;border-radius:10px;overflow:hidden;display:none;margin-bottom:10px}
+  video{width:100%;display:block;max-height:50vh;object-fit:cover}
+  #mira{position:absolute;left:10%;right:10%;top:40%;height:20%;border:2px solid #34d399;border-radius:6px;pointer-events:none}
+  label{display:block;margin:12px 0 4px;font-size:.85rem;color:#444}
+  input,select,textarea{width:100%;padding:12px;border:1px solid #ccc;border-radius:8px;font-size:1rem}
+  .row{display:flex;gap:8px}
+  .row > *{flex:1}
+  button{width:100%;padding:13px;border:0;border-radius:8px;font-size:1rem;cursor:pointer;margin-top:12px}
+  .pri{background:#1a73e8;color:#fff}
+  .sec{background:#e8eaed;color:#222}
+  button:disabled{opacity:.6}
+  #msg{margin-top:10px;text-align:center;font-size:.9rem;min-height:1.2em}
+  #info{font-size:.75rem;color:#777;margin-top:6px}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Escáner de códigos</h1>
+
+  <div id="cam"><video id="video" playsinline muted></video><div id="mira"></div></div>
+  <button class="sec" id="btnScan">📷 Escanear con la cámara</button>
+  <div id="info"></div>
+
+  <form id="f">
+    <label>Código (EAN-13 / Code 128)</label>
+    <input name="codigo" id="codigo" inputmode="text" autocomplete="off" required placeholder="Escanee o escriba el código">
+
+    <div class="row">
+      <div>
+        <label>Tipo</label>
+        <select name="tipo">
+          <option>Inventario</option>
+          <option>Medidor</option>
+        </select>
+      </div>
+      <div>
+        <label>Cantidad / Lectura</label>
+        <input name="cantidad" type="number" step="any" inputmode="decimal" required>
+      </div>
+    </div>
+
+    <label>Quién registra</label>
+    <input name="usuario" id="usuario" placeholder="Nombre">
+
+    <label>Notas</label>
+    <textarea name="notas" rows="2"></textarea>
+
+    <button class="pri" id="btnSend">Guardar</button>
+    <div id="msg"></div>
+  </form>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
+<script>
+// Pegue aquí la misma URL y token del formulario de ventas
+const URL_SCRIPT = 'https://script.google.com/macros/s/AKfycbx5TXfxhTznlvohaLP_vxrYcqlTMM4PpdkravvQ6RvGjlDKqvxtudBxC31lNYWLXmtnHQ/exec';
+const TOKEN = 'vt-7f3k9q2x';
+
+const $ = id => document.getElementById(id);
+const video = $('video'), cam = $('cam'), codigo = $('codigo'), msg = $('msg');
+let stream = null, running = false, zxingReader = null, lastFormat = '';
+
+$('usuario').value = (()=>{ try{return localStorage.getItem('usuario')||''}catch(e){return ''} })();
+$('info').textContent = ('BarcodeDetector' in window) ? 'Lector: nativo del navegador' : 'Lector: ZXing (compatible con iPhone)';
+
+function onCode(text, fmt){
+  codigo.value = text; lastFormat = fmt || '';
+  if (navigator.vibrate) navigator.vibrate(120);
+  stopScan();
+  document.querySelector('[name=cantidad]').focus();
+}
+
+async function startScan(){
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    msg.textContent = '❌ La cámara requiere abrir la página con HTTPS'; return;
+  }
+  cam.style.display = 'block'; $('btnScan').textContent = '✖ Detener cámara'; running = true; msg.textContent = '';
+  try{
+    if ('BarcodeDetector' in window){
+      const det = new BarcodeDetector({formats:['ean_13','code_128']});
+      stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}}});
+      video.srcObject = stream; await video.play();
+      const loop = async () => {
+        if(!running) return;
+        try{
+          const r = await det.detect(video);
+          if (r.length){ onCode(r[0].rawValue, r[0].format); return; }
+        }catch(e){}
+        requestAnimationFrame(loop);
+      };
+      loop();
+    } else if (window.ZXing){
+      const hints = new Map();
+      hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.EAN_13, ZXing.BarcodeFormat.CODE_128]);
+      hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+      zxingReader = new ZXing.BrowserMultiFormatReader(hints);
+      await zxingReader.decodeFromConstraints({video:{facingMode:{ideal:'environment'}}}, video, (res)=>{
+        if(res && running) onCode(res.getText(), ZXing.BarcodeFormat[res.getBarcodeFormat()]);
+      });
+    } else {
+      msg.textContent = '❌ No se pudo cargar el lector (¿sin internet?). Escriba el código.'; stopScan();
+    }
+  }catch(err){
+    msg.textContent = '❌ No se pudo abrir la cámara. Revise el permiso.'; stopScan();
+  }
+}
+
+function stopScan(){
+  running = false; cam.style.display = 'none'; $('btnScan').textContent = '📷 Escanear con la cámara';
+  if (zxingReader){ try{zxingReader.reset()}catch(e){} zxingReader = null; }
+  if (stream){ stream.getTracks().forEach(t=>t.stop()); stream = null; }
+  video.srcObject = null;
+}
+
+$('btnScan').addEventListener('click', ()=> running ? stopScan() : startScan());
+
+$('f').addEventListener('submit', async e => {
+  e.preventDefault();
+  const btn = $('btnSend'); btn.disabled = true; msg.textContent = 'Enviando...';
+  try{ localStorage.setItem('usuario', $('usuario').value) }catch(_){}
+  const data = new FormData(e.target);
+  data.append('token', TOKEN);
+  data.append('hoja', 'Escaneos');
+  data.append('formato', lastFormat);
+  try{
+    await fetch(URL_SCRIPT, {method:'POST', mode:'no-cors', body:data});
+    msg.textContent = '✅ Guardado: ' + codigo.value;
+    const u = $('usuario').value; e.target.reset(); $('usuario').value = u; lastFormat = '';
+  }catch(err){ msg.textContent = '❌ Error al enviar'; }
+  btn.disabled = false;
+});
+</script>
+</body>
+</html>
